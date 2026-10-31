@@ -4,10 +4,11 @@
 // data/claude-resume/<terminal>.json = which session runs in which terminal. Once per boot,
 // this types `claude --resume <id>` into each saved terminal that is live and at a shell.
 // Busy terminals are left alone; entries for terminals that are gone are dropped.
-// Status-bar chip: "N saved" normally, "Resumed N" after a boot pass. Click = run a pass now.
+// Status-bar chip: "↻ N chats" normally; "↻ Resumed N" for 10 minutes after a pass (click
+// dismisses it); "↻ set up" in amber when the hook is missing. Click otherwise = a pass now.
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { exec, hc, appHome, readTextFile, shared, setShared, theme } from "herdr";
+import { exec, hc, home, appHome, readTextFile, shared, setShared, theme } from "herdr";
 import * as fs from "fs/promises";
 
 const DIR = () => `${appHome()}/data/claude-resume`;
@@ -19,10 +20,13 @@ const json = (r) => { try { return r?.code === 0 ? JSON.parse(r.stdout) : null; 
 
 async function bootTime() {
   const r = await exec("sysctl", ["-n", "kern.boottime"]).catch(() => null);
-  const m = r?.stdout.match(/sec = (\d+)/);
-  if (m) return m[1];
-  const up = await exec("cat", ["/proc/stat"]).catch(() => null); // Linux
-  return up?.stdout.match(/btime (\d+)/)?.[1] ?? null;
+  return r?.stdout.match(/sec = (\d+)/)?.[1] ?? null;
+}
+
+// The hook is what saves chats; without it the chip would sit at "0 chats" looking fine.
+async function hookInstalled() {
+  const s = await readTextFile(`${home()}/.claude/settings.json`).catch(() => null);
+  return Boolean(s?.includes("claude-resume/hook.py"));
 }
 
 async function entries() {
@@ -59,9 +63,11 @@ async function pass() {
   return done;
 }
 
+const SHOW_RESUMED_MS = 10 * 60 * 1000;
+
 export default class ClaudeResume extends View {
   init(_props, cx) {
-    this.saved = 0; this.resumed = null; this.busy = false;
+    this.saved = 0; this.resumed = null; this.resumedAt = 0; this.busy = false; this.hook = true;
     cx.timer.every(30000, (cx) => this.count(cx));
     this.count(cx);
     cx.spawn(async (cx) => {
@@ -76,7 +82,11 @@ export default class ClaudeResume extends View {
   }
 
   count(cx) {
-    cx.spawn(async (cx) => { this.saved = (await entries()).length; cx.notify(); });
+    cx.spawn(async (cx) => {
+      [this.saved, this.hook] = [(await entries()).length, await hookInstalled()];
+      if (this.resumed && Date.now() - this.resumedAt > SHOW_RESUMED_MS) this.resumed = null;
+      cx.notify();
+    });
   }
 
   async run(cx) {
@@ -84,23 +94,32 @@ export default class ClaudeResume extends View {
     this.busy = true; cx.notify();
     const done = await pass();
     this.busy = false;
-    if (done) this.resumed = done;
+    if (done?.length) { this.resumed = done; this.resumedAt = Date.now(); }
     this.saved = (await entries()).length;
     cx.notify();
+  }
+
+  click(cx) {
+    if (this.resumed) { this.resumed = null; cx.notify(); return; }
+    cx.spawn(async (cx) => this.run(cx));
   }
 
   render() {
     const t = theme();
     const n = this.resumed?.length ?? 0;
-    const label = this.busy ? "Resuming…" : n ? `↻ Resumed ${n}` : `↻ ${this.saved} saved`;
-    const tip = n
-      ? `Resumed after restart:\n${this.resumed.join("\n")}`
-      : `${this.saved} Claude chat${this.saved === 1 ? "" : "s"} will come back after a restart.\nClick to resume any that are sitting at a bare shell now.`;
+    const chats = `${this.saved} Claude chat${this.saved === 1 ? "" : "s"}`;
+    const [label, color, tip] =
+      this.busy ? ["↻ Resuming…", t.dim, "Typing claude --resume into panes at a bare shell"]
+      : n ? [`↻ Resumed ${n}`, t.accent, `Resumed:\n${this.resumed.join("\n")}\n\nClick to dismiss.`]
+      : !this.hook ? ["↻ set up", t.blocked ?? t.ansi3,
+          "Chats aren't being saved: the Claude Code hook isn't installed.\nAdd mods/claude-resume/hook.py to ~/.claude/settings.json\nunder SessionStart and SessionEnd (see the mod's RECIPE.md)."]
+      : [`↻ ${this.saved} chat${this.saved === 1 ? "" : "s"}`, t.dim,
+          `${chats} will come back after a restart.\nClick to resume any sitting at a bare shell now.`];
     return h_flex().size_full().items_center().px(8).text_size(12)
       .child(div().id("claude-resume").tooltip(tip).px(6).rounded(4).cursor_pointer()
-        .text_color(n ? t.accent : t.dim)
+        .text_color(color)
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .on_click((_, cx) => cx.spawn(async (cx) => this.run(cx)))
+        .on_click((_, cx) => this.click(cx))
         .child(label));
   }
 }
