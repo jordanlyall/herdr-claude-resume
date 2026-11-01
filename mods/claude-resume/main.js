@@ -12,15 +12,24 @@ import { exec, hc, home, appHome, readTextFile, shared, setShared, theme } from 
 import * as fs from "fs/promises";
 
 const DIR = () => `${appHome()}/data/claude-resume`;
-const SHELLS = new Set(["zsh", "-zsh", "bash", "-bash", "fish", "-fish", "sh"]);
+const SHELLS = new Set(["zsh", "-zsh", "bash", "-bash", "fish", "-fish", "sh", "bash.exe", "sh.exe"]);
+// Windows: PowerShell quotes differently, so its panes get their own command line.
+const PWSH = new Set(["pwsh.exe", "pwsh", "powershell.exe", "powershell"]);
 const BOOT_KEY = "claude-resume.boot";
 
 const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+const pwshQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 const json = (r) => { try { return r?.code === 0 ? JSON.parse(r.stdout) : null; } catch { return null; } };
 
+// Without sysctl (Windows, where Fast Startup also keeps the boot time across a shutdown),
+// use when herdr-core started instead: its restart is what kills the chats. Its pid
+// identifies that start.
 async function bootTime() {
   const r = await exec("sysctl", ["-n", "kern.boottime"]).catch(() => null);
-  return r?.stdout.match(/sec = (\d+)/)?.[1] ?? null;
+  const sec = r?.stdout.match(/sec = (\d+)/)?.[1];
+  if (sec) return sec;
+  const s = json(await hc(["server", "status", "--json"]).catch(() => null));
+  return s?.pid ? `core-${s.pid}` : null;
 }
 
 // The hook is what saves chats; without it the chip would sit at "0 chats" looking fine.
@@ -54,10 +63,15 @@ async function pass() {
     if (!/^[0-9a-f-]{36}$/i.test(e.session ?? "")) continue; // typed into a shell: ids only
     if (!t) { await fs.unlink(e.file).catch(() => {}); continue; }
     const info = json(await hc(["get", e.term, "--json"]).catch(() => null));
-    const fg = info?.foreground?.name ?? "";
-    if (!SHELLS.has(fg) || t.agent === "claude-code") continue;
-    if (e.transcript && (await exec("test", ["-f", e.transcript]).catch(() => null))?.code !== 0) continue;
-    await hc(["send", e.term, `cd ${quote(e.cwd || "~")} && claude --resume ${e.session}`]).catch(() => null);
+    const fg = (info?.foreground?.name ?? "").toLowerCase();
+    const pwsh = PWSH.has(fg);
+    // hc ls names a shell's program as its agent too (pwsh.exe): only Claude counts as busy.
+    if ((!SHELLS.has(fg) && !pwsh) || t.agent === "claude-code") continue;
+    if (e.transcript && !(await fs.exists(e.transcript).catch(() => false))) continue;
+    const line = pwsh
+      ? `Set-Location -LiteralPath ${pwshQuote(e.cwd || home())}; claude --resume ${e.session}`
+      : `cd ${quote(e.cwd || "~")} && claude --resume ${e.session}`;
+    await hc(["send", e.term, line]).catch(() => null);
     done.push(t.where || e.term);
   }
   return done;
