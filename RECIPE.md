@@ -16,12 +16,12 @@ Restarting your Mac kills every Claude Code chat. Herdr brings each pane back as
 
 ## How it behaves
 
-- **Once per boot.** On start, the mod reads the boot time (`sysctl -n kern.boottime`) and compares it to `shared("claude-resume.boot")`. If they differ, it waits up to 2 minutes for herdr-core to list live terminals, waits 3 more seconds for the shells to settle, stores the new boot time, and runs one pass. Reloading the mod or reopening Herdr later in the same boot does nothing.
+- **Once per boot.** On start, the mod reads the boot time (`sysctl -n kern.boottime`) and compares it to `shared("claude-resume.boot")`. Where there's no `sysctl` (Windows), it uses `core-<pid>` from `hc server status --json` instead: a herdr-core restart is what kills the chats. If they differ, it waits up to 2 minutes for herdr-core to list live terminals, waits 3 more seconds for the shells to settle, stores the new boot time, and runs one pass. Reloading the mod or reopening Herdr later in the same boot does nothing.
 - **A pass** goes through each saved entry:
   - terminal gone (not `live` in `hc ls`): drops the entry
-  - terminal running something other than a shell (`hc get` foreground isn't zsh, bash, fish or sh), or already running Claude: leaves it alone
+  - terminal running something other than a shell (`hc get` foreground isn't zsh, bash, fish, sh or PowerShell), or already running Claude: leaves it alone
   - transcript file missing: skips it
-  - otherwise: `hc send <t> "cd '<cwd>' && claude --resume <id>"`. The chat opens idle and nothing re-runs until you type.
+  - otherwise: `hc send <t> "cd '<cwd>' && claude --resume <id>"` (in PowerShell: `Set-Location -LiteralPath '<cwd>'; claude --resume <id>`). The chat opens idle and nothing re-runs until you type.
 - **Clicking the chip** runs a pass right away. It's safe to click any time, because busy panes are skipped. While it shows `Resumed N`, a click dismisses that instead.
 - **Hook check:** every 30 s, the mod looks for `claude-resume/hook.py` in `~/.claude/settings.json`. If it's missing, the chip switches to `↻ set up`.
 - **Which chats are saved:** every Claude session started inside a Herdr terminal. Exiting on purpose (`/exit`, ctrl-D, `/logout`) removes that chat, so chats you closed yourself don't come back. A restart, a crash, or closing the pane leaves the entry. A closed pane's entry is dropped on the next pass because the terminal is gone.
@@ -29,7 +29,7 @@ Restarting your Mac kills every Claude Code chat. Herdr brings each pane back as
 
 ## Built from
 
-- `mods/claude-resume/main.js`: one `View`. It uses `readTextFile` on `~/.claude/settings.json` for the hook check, `hc(["ls","--json"])`, `hc(["get",t,"--json"])`, `hc(["send",t,cmd])`, `exec("sysctl")`, `exec("test",["-f",path])`, `readTextFile`, `fs.readdir` / `fs.unlink` under `appHome()/data/claude-resume`, `shared` / `setShared`, `cx.sleep`, `cx.timer.every`, and theme colors `dim`, `accent`, `hover`, `foreground`.
+- `mods/claude-resume/main.js`: one `View`. It uses `readTextFile` on `~/.claude/settings.json` for the hook check, `hc(["ls","--json"])`, `hc(["get",t,"--json"])`, `hc(["send",t,cmd])`, `exec("sysctl")` (falling back to `hc(["server","status","--json"])`), `fs.exists` on the transcript, `readTextFile`, `fs.readdir` / `fs.unlink` under `appHome()/data/claude-resume`, `shared` / `setShared`, `cx.sleep`, `cx.timer.every`, and theme colors `dim`, `accent`, `hover`, `foreground`.
 - `mods/claude-resume/hook.py`: a Claude Code hook for **SessionStart** and **SessionEnd**. When `HC_TERMINAL_ID` is set, it writes `$HERDR_APP_HOME/data/claude-resume/<HC_TERMINAL_ID>.json` = `{session, cwd, transcript}` (default `~/.config/herdr-app`). On SessionEnd it deletes the entry only when `reason` is `prompt_input_exit` or `logout` and the session matches. It skips subagents (`agent_id`).
 - Layout: one block in the status-bar row, e.g. `{"id": "status-resume", "type": "block", "content": {"mod": "claude-resume"}, "size": {"px": 100}}`.
 
@@ -40,6 +40,8 @@ Restarting your Mac kills every Claude Code chat. Herdr brings each pane back as
 "SessionEnd":   [{ "hooks": [{ "type": "command", "command": "/usr/bin/python3 ~/.config/herdr-app/mods/claude-resume/hook.py", "timeout": 5 }] }]
 ```
 
+On Windows, use `python "C:/Users/<you>/.config/herdr-app/mods/claude-resume/hook.py"` as the command.
+
 Chats already open when you install weren't seen by the hook. They're covered after their next start or `/resume`.
 
 ## Watch out
@@ -49,8 +51,8 @@ Chats already open when you install weren't seen by the hook. They're covered af
 - **`hc send` from inside a Herdr terminal wraps the text in `<hc from="tN">…</hc>`** (that's meant for agents), and a shell chokes on it. The mod runs in the app, so its sends are plain. If you test from a terminal, use `env -u HC_TERMINAL_ID hc send …`.
 - The session id gets typed into a shell, so the mod only sends ids that match `^[0-9a-f-]{36}$`. The cwd is single-quoted.
 - A folder Claude hasn't been told to trust stops at the trust prompt. Folders you already worked in are trusted.
-- It runs programs (`hc`, `sysctl`, `test`), reads `~/.claude/settings.json`, and the hook writes outside the mod folder (`data/claude-resume/`). It never reaches the network.
-- macOS only. Tested with zsh.
+- It runs programs (`hc`, `sysctl`), reads `~/.claude/settings.json`, and the hook writes outside the mod folder (`data/claude-resume/`). It never reaches the network.
+- Made for macOS, tested with zsh. Also works on Windows with PowerShell 7.
 - The hook check only looks at the user settings file. A hook registered only in a project's `.claude/settings.json` works, but the chip will say `set up`.
 
 ## Done when

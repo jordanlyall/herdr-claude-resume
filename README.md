@@ -27,10 +27,10 @@ A small chip in the status bar:
 ## What it touches
 
 - A Claude Code hook (`hook.py`, on SessionStart and SessionEnd) writes one small file per pane to `~/.config/herdr-app/data/claude-resume/`. A chat you close on purpose (`/exit`, ctrl-D) is forgotten, so it won't come back.
-- The mod runs `hc`, `sysctl` and `test`, and reads `~/.claude/settings.json` to check the hook is there.
+- The mod runs `hc` and `sysctl`, and reads `~/.claude/settings.json` to check the hook is there.
 - It never touches the network. Panes that are busy running something are never typed into.
 
-macOS only.
+Made for macOS. It also works on Windows with PowerShell 7: there the once-per-boot pass keys on the herdr-core start instead of the boot time, and the hook command is `python "C:/Users/<you>/.config/herdr-app/mods/claude-resume/hook.py"`.
 
 ## License
 
